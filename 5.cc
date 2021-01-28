@@ -1,83 +1,82 @@
-#include "ns3/lte-helper.h"
-#include "ns3/epc-helper.h"
-#include "ns3/core-module.h"
-#include "ns3/network-module.h"
-#include "ns3/ipv4-global-routing-helper.h"
-#include "ns3/internet-module.h"
-#include "ns3/mobility-module.h"
-#include "ns3/lte-module.h"
-#include "ns3/applications-module.h"
-#include "ns3/point-to-point-helper.h"
-#include "ns3/config-store.h"
-#include "ns3/mobile-application-helper.h"
+import csv
+import random
+import math
 
-using namespace ns3;
+def loadcsv(filename):
+    lines=csv.reader(open(filename,"r"))
+    dataset=list(lines)
+    for i in range(len(dataset)):
+        dataset[i]=[float(x) for x in dataset[i]]
+    return dataset
 
-int main(int argc, char *argv[])
-{
-    uint16_t numberOfNodes = 2;
-    double distance = 60.0;
-    double interPacketInterval = 100;
-    CommandLine cmd;
-    cmd.Parse(argc, argv);
-    Ptr<LteHelper> lteHelper = CreateObject<LteHelper>();
-    Ptr<PointToPointEpcHelper> epcHelper = CreateObject<PointToPointEpcHelper>();
-    lteHelper->SetEpcHelper(epcHelper);
-    ConfigStore inputConfig;
-    inputConfig.ConfigureDefaults();
-    cmd.Parse(argc, argv);
-    Ptr<Node> pgw = epcHelper->GetPgwNode();
-    
-    NodeContainer remoteHostContainer;
-    remoteHostContainer.Create(1);
-    Ptr<Node> remoteHost = remoteHostContainer.Get(0);
-    InternetStackHelper internet;
-    internet.Install(remoteHostContainer);
-    
-    PointToPointHelper p2ph;
-    p2ph.SetDeviceAttribute("DataRate", DataRateValue(DataRate("100Gb/s")));
-    p2ph.SetDeviceAttribute("Mtu", UintegerValue(1500));
-    p2ph.SetChannelAttribute("Delay", TimeValue(Seconds(0.010)));
-    NetDeviceContainer internetDevices = p2ph.Install(pgw, remoteHost);
-    Ipv4AddressHelper ipv4h;
-    ipv4h.SetBase("1.0.0.0", "255.0.0.0");
-    Ipv4InterfaceContainer internetIpIfaces = ipv4h.Assign(internetDevices);
-    
-    Ipv4Address remoteHostAddr = internetIpIfaces.GetAddress(1);
-    Ipv4StaticRoutingHelper ipv4RoutingHelper;
-    Ptr<Ipv4StaticRouting> remoteHostStaticRouting =
-        ipv4RoutingHelper.GetStaticRouting(remoteHost->GetObject<Ipv4>());
-    remoteHostStaticRouting->AddNetworkRouteTo(Ipv4Address("7.0.0.0"), Ipv4Mask("255.0.0.0"), 1);
-    NodeContainer ueNodes;
-    NodeContainer enbNodes;
-    enbNodes.Create(numberOfNodes);
-    ueNodes.Create(numberOfNodes);
-    
-    MobileApplicationHelper mobileApplicatonHelper(enbNodes, ueNodes, numberOfNodes);
-    mobileApplicatonHelper.SetupMobilityModule(distance);
+def splitdata(dataset,splitratio):
+    line=int(len(dataset)*splitratio)
+    trainset=dataset[:line]
+    testset=dataset[line:]
+    return [trainset,testset]
 
-    mobileApplicatonHelper.SetupDevices(lteHelper, epcHelper, ipv4RoutingHelper);
-   
-    uint16_t dlPort = 1234;
-    uint16_t ulPort = 2000;
-    uint16_t otherPort = 3000;
-    ApplicationContainer clientApps;
-    ApplicationContainer serverApps;
+def mean(numbers):
+    return sum(numbers)/(len(numbers))
 
-    mobileApplicatonHelper.SetupApplications(serverApps, clientApps, remoteHost, remoteHostAddr, ulPort, dlPort, otherPort, interPacketInterval);
+def stdev(numbers):
+    avg=mean(numbers)
+    v=0
+    for x in numbers:
+        v+=(x-avg)**2
+    return math.sqrt(v/(len(numbers)-1))
 
-    serverApps.Start(Seconds(0.01));
-    clientApps.Start(Seconds(0.01));
-    clientApps.Stop(Seconds(8));
-    lteHelper->EnableTraces();
-  
-    p2ph.EnablePcapAll("lena-epc-first");
+def summarize(dataset):
+    separated={}
+    for i in range(len(dataset)):
+        vector=dataset[i]
+        if vector[-1] not in separated:
+            separated[vector[-1]]=[]
+        separated[vector[-1]].append(vector)
+        
+    summary={}
+    for classval,instances in separated.items():
+        summary[classval]=[(mean(attribute),stdev(attribute)) for attribute in zip(*instances)][:-1]
+    print(summary)
+    return summary
 
-    AsciiTraceHelper ascii;
-    p2ph.EnableAsciiAll(ascii.CreateFileStream("cdma.tr"));
-    Simulator::Stop(Seconds(10));
-    Simulator::Run();
-   
-    Simulator::Destroy();
-    return 0;
-}
+def prob(x,mean,std):
+    exp=math.exp((-(x-mean)**2)/(2*(std**2)))
+    return (1/((2*math.pi)**(1/2)))*exp
+
+def predict(summary,instance):
+    p_summary={}
+    for classval,inst in summary.items():
+        p_summary[classval]=1
+        for i in range(len(inst)):
+            mean,std=inst[i]
+            x=instance[i]
+            p_summary[classval]*=prob(x,mean,std)
+    bestc,bestp=None,-1
+    for classval,pro in p_summary.items():
+        if bestc is None or bestp<pro:
+            bestc=classval
+            bestp=pro
+    return bestc
+
+def get_prediction(summary,testset):
+    prediction=[]
+    for i in range(len(testset)):
+        p=predict(summary,testset[i])
+        prediction.append(p)
+    return prediction
+
+def get_accuracy(pred,testset):
+    count=0
+    for i in range(len(pred)):
+        if pred[i]==testset[i][-1]:
+            count+=1
+    return ((count/len(pred))*100)
+
+filename="ConceptLearning.csv"
+dataset=loadcsv(filename)
+splitratio=0.90
+trainset,testset=splitdata(dataset,splitratio)
+summary=summarize(trainset)
+pred=get_prediction(summary,testset)
+print("\nPredicted :", pred)
+print("\nAccuracy:",get_accuracy(pred,testset))
